@@ -1,0 +1,7 @@
+{
+  "name": "Hospital AI Dispatcher",
+  "description": "Intelligent Agent Dispatcher for Hospital Systems using Google Gemini 2.5",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
