@@ -15,6 +15,7 @@ export interface Message {
   timestamp: Date;
   metadata?: {
     imageUrl?: string;
+    videoUrl?: string; // New: For Veo output
     sources?: { uri: string; title: string }[];
     isThinking?: boolean;
   };

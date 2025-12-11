@@ -1,14 +1,27 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, FunctionDeclaration, Tool } from "@google/genai";
 import { AgentType } from "../types";
 
+// Dynamic API Key storage for Netlify/Web support
+let dynamicApiKey = (typeof process !== "undefined" && process.env && process.env.API_KEY) ? process.env.API_KEY : "";
+
+export const setApiKey = (key: string) => {
+  dynamicApiKey = key;
+};
+
 // Initialize Gemini Client
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const getAI = () => {
+  if (!dynamicApiKey) {
+    console.warn("API Key is missing. Please provide an API Key.");
+  }
+  return new GoogleGenAI({ apiKey: dynamicApiKey });
+};
 
 /**
  * THE DISPATCHER AGENT
  * Analyzes intent and routes to the correct sub-agent.
  */
 export const dispatchQuery = async (userQuery: string): Promise<AgentType> => {
+  const ai = getAI();
   const model = "gemini-2.5-flash";
   
   const systemInstruction = `
@@ -19,8 +32,8 @@ export const dispatchQuery = async (userQuery: string): Promise<AgentType> => {
   [ROUTING RULES]
   1. JIKA terkait informasi dasar pasien (daftar, update data): OUTPUT: [[Manajemen_Pasien]]
   2. JIKA terkait janji temu (buat, ubah, batal): OUTPUT: [[Penjadwal_Janji_Temu]]
-  3. JIKA terkait rekam medis (lab, diagnosa, edukasi, gambar medis): OUTPUT: [[Rekam_Medis]]
-  4. JIKA terkait admin/penagihan (biaya, asuransi, umum): OUTPUT: [[Administratif_Penagihan]]
+  3. JIKA terkait rekam medis (lab, diagnosa, edukasi, gambar/video medis): OUTPUT: [[Rekam_Medis]]
+  4. JIKA terkait admin/penagihan (biaya, asuransi, verifikasi SPJ): OUTPUT: [[Administratif_Penagihan]]
   5. JIKA ambigu: OUTPUT: [[Klarifikasi_Diperlukan]]
 
   Hanya outputkan tag tersebut.
@@ -32,7 +45,7 @@ export const dispatchQuery = async (userQuery: string): Promise<AgentType> => {
       contents: userQuery,
       config: {
         systemInstruction,
-        temperature: 0.1, // Low temperature for deterministic routing
+        temperature: 0.1,
       }
     });
 
@@ -52,26 +65,55 @@ export const dispatchQuery = async (userQuery: string): Promise<AgentType> => {
 
 /**
  * MEDICAL RECORDS AGENT (Multimodal)
- * Uses Google Search for accuracy and Image Generation for education.
+ * Capabilities: Google Search (Grounding), Image Generation (Imagen), Video Generation (Veo)
  */
-export const handleMedicalQuery = async (query: string): Promise<{ text: string; imageUrl?: string; sources?: { uri: string; title: string }[] }> => {
-  // Check if user wants an image visualization
-  const isImageRequest = query.toLowerCase().includes("gambar") || query.toLowerCase().includes("visual") || query.toLowerCase().includes("foto");
+export const handleMedicalQuery = async (query: string): Promise<{ text: string; imageUrl?: string; videoUrl?: string; sources?: { uri: string; title: string }[] }> => {
+  const ai = getAI();
+  const lowerQuery = query.toLowerCase();
+  
+  // 1. Check for Video Request (Veo)
+  if (lowerQuery.includes("video") || lowerQuery.includes("animasi") || lowerQuery.includes("gerak")) {
+    try {
+      let operation = await ai.models.generateVideos({
+        model: 'veo-3.1-fast-generate-preview',
+        prompt: `Medical visualization: ${query}`,
+        config: {
+          numberOfVideos: 1,
+          resolution: '720p',
+          aspectRatio: '16:9'
+        }
+      });
 
-  if (isImageRequest) {
+      // Polling for video completion
+      while (!operation.done) {
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        operation = await ai.operations.getVideosOperation({operation: operation});
+      }
+
+      const videoUri = operation.response?.generatedVideos?.[0]?.video?.uri;
+      if (videoUri) {
+         // Append API key for secure fetching
+         const finalVideoUrl = `${videoUri}&key=${dynamicApiKey}`;
+         return {
+             text: "Berikut adalah video visualisasi medis yang Anda minta.",
+             videoUrl: finalVideoUrl
+         };
+      }
+      return { text: "Maaf, gagal membuat video saat ini." };
+
+    } catch (e) {
+      console.error("Video Gen Error", e);
+      return { text: "Layanan video sedang sibuk. Mohon coba lagi nanti." };
+    }
+  }
+
+  // 2. Check for Image Request
+  if (lowerQuery.includes("gambar") || lowerQuery.includes("visual") || lowerQuery.includes("foto")) {
     try {
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash-image",
         contents: query,
-        config: {
-            // Using flash-image to generate the image based on prompt
-        }
       });
-        
-      // Extract image if available (Flash Image generates base64)
-      // Note: In a real 'generateContent' with flash-image, it might return text describing it or the image data depending on setup.
-      // For this demo, we will use the specific 'imagen' style call if available or parse the parts.
-      // However, @google/genai 'generateContent' on flash-image returns inlineData.
       
       let imageUrl = undefined;
       let textResponse = "Berikut adalah visualisasi yang Anda minta.";
@@ -85,70 +127,108 @@ export const handleMedicalQuery = async (query: string): Promise<{ text: string;
              }
           }
       }
-      
       return { text: textResponse, imageUrl };
-
     } catch (e) {
-      console.error("Image Gen Error", e);
-      return { text: "Maaf, saya tidak dapat membuat gambar saat ini. " + (e as Error).message };
+      return { text: "Maaf, tidak dapat membuat gambar saat ini." };
     }
-  } else {
-    // Text/Research Request using Google Search Grounding
-    try {
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash", // Or gemini-3-pro-preview for complex reasoning
-        contents: query,
-        config: {
-          tools: [{ googleSearch: {} }], // Grounding enabled
-          systemInstruction: "Anda adalah Agen Rekam Medis & Edukasi. Berikan jawaban akurat, empatik, dan medis berdasarkan data. Selalu sertakan sumber jika menggunakan Google Search."
-        }
-      });
+  } 
+  
+  // 3. Text/Research Request (Search Grounding)
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash", 
+      contents: query,
+      config: {
+        tools: [{ googleSearch: {} }],
+        systemInstruction: "Anda adalah Agen Rekam Medis. Berikan jawaban medis yang akurat dan berbasis data. Gunakan Google Search untuk verifikasi."
+      }
+    });
 
-      const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
-      const sources = groundingChunks?.map((chunk: any) => chunk.web).filter((w: any) => w) || [];
+    const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
+    const sources = groundingChunks?.map((chunk: any) => chunk.web).filter((w: any) => w) || [];
 
-      return { 
-        text: response.text || "Tidak ada informasi ditemukan.", 
-        sources 
-      };
-    } catch (e) {
-        console.error("Medical Text Error", e);
-        return { text: "Terjadi kesalahan saat mencari informasi medis." };
-    }
+    return { 
+      text: response.text || "Tidak ada informasi ditemukan.", 
+      sources 
+    };
+  } catch (e) {
+      return { text: "Terjadi kesalahan sistem medis." };
   }
 };
 
 /**
  * GENERIC AGENT HANDLER
- * For Admin, Appointment, Patient Management
+ * Supports Function Calling for Admin/Billing
  */
 export const handleGenericAgent = async (agent: AgentType, query: string): Promise<string> => {
+  const ai = getAI();
   let instruction = "";
-  
-  switch (agent) {
-    case AgentType.APPOINTMENT_SCHEDULER:
-      instruction = "Anda adalah Agen Penjadwalan RS. Bantu pasien membuat, ubah, atau batal janji. Tanyakan nama dokter, poli, dan waktu yang diinginkan. Bersikaplah efisien.";
-      break;
-    case AgentType.PATIENT_MANAGEMENT:
-      instruction = "Anda adalah Agen Manajemen Pasien. Bantu pendaftaran atau update data. Tanyakan NIK atau No Rekam Medis untuk verifikasi.";
-      break;
-    case AgentType.ADMIN_BILLING:
-      instruction = "Anda adalah Agen Admin & Keuangan. Jawab pertanyaan seputar biaya, BPJS, jam operasional, dan fasilitas. Bersikaplah formal dan membantu.";
-      break;
-    case AgentType.CLARIFICATION:
-    default:
-      instruction = "Anda adalah asisten RS. Permintaan pengguna sebelumnya tidak jelas. Mohon minta mereka mengulangi atau memberikan detail lebih spesifik agar bisa diarahkan ke departemen yang benar.";
-      break;
+  let tools: Tool[] = [];
+
+  // MOCK DATABASE for verification
+  const checkSPJ = (id: string) => {
+      const status = ["Verified", "Pending", "Rejected"][Math.floor(Math.random() * 3)];
+      return { id, status, timestamp: new Date().toISOString() };
+  };
+
+  if (agent === AgentType.ADMIN_BILLING) {
+      instruction = "Anda adalah Agen Admin & Keuangan. Anda memiliki akses ke alat verifikasi SPJ. Gunakan alat tersebut jika pengguna menanyakan status SPJ.";
+      tools = [{
+        functionDeclarations: [{
+            name: "verifySPJ",
+            description: "Verifikasi status Surat Pertanggung Jawaban (SPJ) atau klaim.",
+            parameters: {
+                type: Type.OBJECT,
+                properties: {
+                    documentId: { type: Type.STRING, description: "Nomor ID Dokumen atau SPJ" }
+                },
+                required: ["documentId"]
+            }
+        }]
+      }];
+  } else if (agent === AgentType.APPOINTMENT_SCHEDULER) {
+      instruction = "Anda adalah Agen Penjadwalan RS. Bantu pasien membuat janji. Tanyakan poli dan dokter.";
+  } else if (agent === AgentType.PATIENT_MANAGEMENT) {
+      instruction = "Anda adalah Agen Manajemen Pasien. Bantu pendaftaran. Tanyakan NIK.";
+  } else {
+      instruction = "Anda adalah asisten klarifikasi. Mohon minta detail lebih lanjut.";
   }
 
   try {
+    // 1. Initial Call
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: query,
-      config: { systemInstruction: instruction }
+      config: { 
+          systemInstruction: instruction,
+          tools: tools.length > 0 ? tools : undefined 
+      }
     });
+
+    // 2. Handle Function Call (Admin Agent)
+    const functionCalls = response.functionCalls;
+    if (functionCalls && functionCalls.length > 0) {
+        const call = functionCalls[0];
+        if (call.name === "verifySPJ") {
+            const docId = (call.args as any).documentId;
+            const result = checkSPJ(docId);
+            
+            // Send result back to model
+            const finalResponse = await ai.models.generateContent({
+                model: "gemini-2.5-flash",
+                contents: [
+                    { role: 'user', parts: [{ text: query }] },
+                    { role: 'model', parts: [{ functionCall: call }] },
+                    { role: 'function', parts: [{ functionResponse: { name: call.name, response: { result } } }] }
+                ]
+            });
+            return finalResponse.text || "Status SPJ telah diverifikasi.";
+        }
+    }
+
     return response.text || "Maaf, bisa diulangi?";
   } catch (e) {
-    return "Maaf sistem sedang sibuk.";
+    console.error(e);
+    return "Sistem sedang sibuk. Pastikan API Key valid.";
   }
 };
