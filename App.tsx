@@ -37,9 +37,16 @@ const App = () => {
         }
       } 
       // 2. Check if Env var is already baked in (e.g. Local dev with .env)
-      else if (process.env.API_KEY) {
-        setApiKey(process.env.API_KEY);
-        setHasKey(true);
+      // Safe check for process to prevent crash in browser
+      else {
+        try {
+          if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
+            setApiKey(process.env.API_KEY);
+            setHasKey(true);
+          }
+        } catch (e) {
+          // Ignore ReferenceError for process
+        }
       }
     };
     checkKey();
@@ -244,7 +251,7 @@ const App = () => {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Jelaskan kebutuhan Anda (Contoh: 'Buatkan video operasi mata', 'Cek status SPJ A-99', 'Daftar poli THT')..."
+              placeholder="Jelaskan kebutuhan Anda (Contoh: 'Buatkan video operasi mata', 'Cek status SPJ A-99', 'Daftar pasien baru')..."
               className="w-full bg-gray-50 text-gray-800 rounded-xl pl-5 pr-14 py-4 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all border border-gray-200 shadow-sm text-sm"
               disabled={isDispatcherThinking || isAgentTyping}
             />

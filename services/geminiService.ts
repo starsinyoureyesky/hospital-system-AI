@@ -2,7 +2,19 @@ import { GoogleGenAI, Type, FunctionDeclaration, Tool } from "@google/genai";
 import { AgentType } from "../types";
 
 // Dynamic API Key storage for Netlify/Web support
-let dynamicApiKey = (typeof process !== "undefined" && process.env && process.env.API_KEY) ? process.env.API_KEY : "";
+// Safely check for process.env to avoid ReferenceError in strict browser environments
+const getEnvKey = () => {
+  try {
+    if (typeof process !== "undefined" && process.env && process.env.API_KEY) {
+      return process.env.API_KEY;
+    }
+  } catch (e) {
+    // Ignore error if process is not defined
+  }
+  return "";
+};
+
+let dynamicApiKey = getEnvKey();
 
 export const setApiKey = (key: string) => {
   dynamicApiKey = key;
