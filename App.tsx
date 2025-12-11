@@ -36,11 +36,20 @@ const App = () => {
           setHasKey(true);
         }
       } 
-      // 2. Check if Env var is already baked in (e.g. Local dev with .env)
-      // Safe check for process to prevent crash in browser
+      // 2. Check if Env var is already baked in (Vite or Process)
       else {
+        // Check Vite Env
+        if (import.meta.env && import.meta.env.VITE_API_KEY) {
+          setApiKey(import.meta.env.VITE_API_KEY);
+          setHasKey(true);
+          return;
+        }
+
+        // Check Legacy Process Env safely
         try {
+          // @ts-ignore
           if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
+            // @ts-ignore
             setApiKey(process.env.API_KEY);
             setHasKey(true);
           }

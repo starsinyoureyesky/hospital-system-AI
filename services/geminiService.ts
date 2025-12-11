@@ -4,8 +4,16 @@ import { AgentType } from "../types";
 // Dynamic API Key storage for Netlify/Web support
 // Safely check for process.env to avoid ReferenceError in strict browser environments
 const getEnvKey = () => {
+  // 1. Check Vite Environment Variable (Standard for Vite apps)
+  if (import.meta.env && import.meta.env.VITE_API_KEY) {
+    return import.meta.env.VITE_API_KEY;
+  }
+  
+  // 2. Check Node Environment Variable (Legacy/Dev)
   try {
+    // @ts-ignore
     if (typeof process !== "undefined" && process.env && process.env.API_KEY) {
+      // @ts-ignore
       return process.env.API_KEY;
     }
   } catch (e) {
